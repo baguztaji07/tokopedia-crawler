@@ -7,8 +7,9 @@ import java.io.InputStream;
 //import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.List;
+import java.util.Map;
 //import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 import java.util.Set;
@@ -27,31 +28,30 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
-import com.gargoylesoftware.htmlunit.FailingHttpStatusCodeException;
-import com.gargoylesoftware.htmlunit.WebClient;
-import com.gargoylesoftware.htmlunit.html.HtmlElement;
-import com.gargoylesoftware.htmlunit.html.HtmlPage;
-
-
-
-
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class Scrapper {
 	public static TreeMap<Integer, Object[]> product = new TreeMap<Integer,Object[]>();
 	public static int iterator = 0;
 	public static int total = 100;
+	static long startTime;
+	static long endTime;
+	static long totalTime;
 	
 	public static void main(String[] args) throws IOException {
 		int page = totalOfPages(total);
-		System.out.println(page);
+		System.out.println("total product: "+total);
+		System.out.println("total page: "+page+"\n");
 		for (int i=1; i<=page; i++) {
 			String data = fetchDatas(i, startFrom(i));
 			storeData(data,i);
 		}
-		createExcel();	
-		
+		System.out.println("\nTotal time consumed to fetch all data: "+totalTime/1000000000+"s");
+		createExcel();
 	}
 	
+	///fetch list of product from json
 	private static String fetchDatas(int page, int start) throws IOException {
 		URL url = new URL("https://gql.tokopedia.com/graphql/SearchProductQuery");
 		HttpURLConnection http = (HttpURLConnection)url.openConnection();
@@ -100,13 +100,14 @@ public class Scrapper {
 		}
 	}
 	
+	///create excel from the data
 	private static void createExcel() {
 		//Blank workbook
 		Workbook workbook = new HSSFWorkbook(); 
          
         //Create a blank sheet
         Sheet sheet = workbook.createSheet("Employee Data");
-      //Iterate over data and write to sheet
+       //Iterate over data and write to sheet
         Set<Integer> keyset = product.keySet();
         int rownum = 0;
         Row rowhead = sheet.createRow(rownum++);
@@ -138,11 +139,11 @@ public class Scrapper {
         try
         {
             //Write the workbook in file system
-            FileOutputStream out = new FileOutputStream(new File("D:/Belajar/Tokopedia.xls"));
+            FileOutputStream out = new FileOutputStream(new File("D:/Belajar/Tokopedia.csv"));
             workbook.write(out);
             out.close();
             workbook.close();
-            System.out.println("Tokopedia.xls written successfully on disk.");
+            System.out.println("Tokopedia.csv written successfully on disk.");
         } 
         catch (Exception e) 
         {
@@ -150,13 +151,13 @@ public class Scrapper {
         }
 	}
 	
-	private static void storeData(String data, int page) {
+	///store data from the fetchDatas function to object
+	private static void storeData(String data, int page) throws IOException {
 		try {
 			JSONArray json = new JSONArray(data);
 			JSONObject obj = json.getJSONObject(0).getJSONObject("data").getJSONObject("CategoryProducts");
 			JSONArray items = obj.getJSONArray("data");
-//			System.out.println(items);
-			
+			startTime = System.nanoTime();
 			for (int i=0;i<items.length()&&iterator<total;i++) {
 				JSONObject item = items.getJSONObject(i);
 				String name = (String) item.get("name");
@@ -165,12 +166,20 @@ public class Scrapper {
 				String price = (String) item.get("price");
 				int rating = (int) item.get("rating");
 				String storeName = (String) item.getJSONObject("shop").get("name");
-				String description = getDescriptionJsop(urll);
-//				System.out.println(name);
+				String storeUrl = (String) item.getJSONObject("shop").get("url");
+				String storeId = extractStoreId(storeUrl);
+				
+				////fetch description using tokopedia json
+				System.out.println("storeId: "+storeId);
+				String description = fetchDescription(urll,storeId);
+				////fetch description using Jsoup
+//				String description = getDescriptionJsop(urll);
+
 				product.put(iterator, new Object[] {name, urll, description, imgLink, price, rating, storeName});
 				iterator++;
-//				
 			}
+			endTime   = System.nanoTime();
+			totalTime = endTime - startTime;
 			
 		}
 		catch (JSONException e) {
@@ -179,6 +188,7 @@ public class Scrapper {
 		}
 	}
 	
+	///fetch product description using jsoup
 	public static String getDescriptionJsop(String urll) {
 		String url = urll;
 		String desc = null;
@@ -187,10 +197,8 @@ public class Scrapper {
 			Elements elements = document.getElementsByAttributeValue("data-testid", "lblPDPDescriptionProduk");
 
             for(Element element : elements) {
-//                System.out.println(element.text());
                 desc = element.text();
             }
-            System.out.println(desc);
             		
 		}
 		catch (Exception e) 
@@ -201,30 +209,87 @@ public class Scrapper {
 		
 	}
 	
-	public static String getDesc(String urll) {
-		String Description = null;
-		WebClient client = new WebClient();
-		client.getOptions().setCssEnabled(false);
-		client.getOptions().setJavaScriptEnabled(false);
+	///fetch product description using json
+	private static String fetchDescription(String productUrl, String shopName) throws IOException, JSONException {
+		String description = null;
+		String refererUrl = extractProductUrl(productUrl);
+		String productKey = extractProductKey(refererUrl,shopName);
+		
+		URL url = new URL("https://gql.tokopedia.com/graphql/PDPGetLayoutQuery");
+		HttpURLConnection httpConn = (HttpURLConnection) url.openConnection();
+		httpConn.setRequestMethod("POST");
+		httpConn.setDoOutput(true);
+		httpConn.setRequestProperty("authority", "gql.tokopedia.com");
+		httpConn.setRequestProperty("accept", "*/*");
+		httpConn.setRequestProperty("accept-language", "en-US,en;q=0.9");
+		httpConn.setRequestProperty("cache-control", "no-cache");
+		httpConn.setRequestProperty("content-type", "application/json");
+		httpConn.setRequestProperty("cookie", "bm_sz=9E151B56A7503233F40035A493BFCB06~YAAQVfgrF7ckx+uBAQAAN6Q67RBVGVnhdwKjXoECx4Pe+Pjt3u8nMqcEuIqZADXZT50gcxyotFpV5lGharzHmUZrBvytGjlQ1VDpL9nvfWKGNvgjwG3KZbCJwN4XkFNgQqBuJTb7wBS+BJFOEjogm5e9SyoN7g7r2R0JuDnKuG4zVYnlw0qWCqlTCmKqR+jy0G8euIto9lWtVd6h8RWo9DzCD/rek5BW8N3+gn9hOGjmdm/l5GbaSg0hRMV5FVZO2l9lRVGVQOwKCYDp4aDvQo663I1tJLW0B7leoPuT9VN4+uOXo8M=~4601413~3420471; _gcl_au=1.1.1230393353.1657542452; ak_bmsc=8550935F5DF67E6FF0DA167BD2662918~000000000000000000000000000000~YAAQVfgrF8Ukx+uBAQAAtqg67RDoNPo8eRFO8bRRHCQ6jai7N5noYRYJWVrdEmXRdI1dI2JmjzXaHAzkqHBk8PnFZRV9pOwwLd2ZCSnlMpOJu//XZRynqMGu8+wlynhEQwfYT03EnJho7ikaDJoqE6944w+WUzcHzpedLbCrjZmF6xiQbzn27ht9NyTOzJDoleH3Rcr1pgIHCp0SCE+gi0P4C8B7lAewxb9gt5SNmmvG+6lIns+r1mbpw8DLuiOvV5WMZR/FB8uLAaXSJbW8hG7sAbPL3dRAHOJJstMJ24MglRaF+X16W7prxCQ1jdYkZteCD4TWGzQ0bw4B4e8n0PgXGJfmbzCOqp89pQH58fAS6YrYMhnr+Z3GgAWjTn9qJ57JBGT2gLGRrcL3qluZgZWgTF+86FjR10iYMK7vWpv6S7Vp4DM5lmaFF8qZiVAjdtixK1B37PVoge6KaJBxWRT6s5pXPL0YntpNaJuEBjF789tFaoQZztFZy7Fg; _gid=GA1.2.195762451.1657542453; _UUID_NONLOGIN_=d5e2e238e7817b95a57f3194b1c20a89; _SID_Tokopedia_=gt2r4oUZ1SUPU6RjtfTU7vZFurpyJZDSZkouUkqE34V6MEAq2p-4wempiAKAK9gzYLtpgGlsnu6eiI0dfbKVwjO3g590YDQXJhXElzEnD3RpO2gEIedeWBynGwABWlTW; DID=75dc51f61b75e824b19def512bdc3abef0e179fb30e61a3a64432cd660d1795edcd67788cf57e283ab1fcdfc4553da31; DID_JS=NzVkYzUxZjYxYjc1ZTgyNGIxOWRlZjUxMmJkYzNhYmVmMGUxNzlmYjMwZTYxYTNhNjQ0MzJjZDY2MGQxNzk1ZWRjZDY3Nzg4Y2Y1N2UyODNhYjFmY2RmYzQ1NTNkYTMx47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=; AMP_TOKEN=%24NOT_FOUND; hfv_banner=true; _UUID_CAS_=56cb8ef6-7888-466b-aef2-7795b5b76d7c; _CASE_=752c6a476a2c343c3c393a222c6f476a2c343e222c626c622c342c446f656f7c7a6f2e5e7b7d6f7a2c222c6d476a2c343f3938222c626160692c342c2c222c626f7a2c342c2c222c7e4d612c342c2c222c79476a2c343f3c3c3f3e3d393b222c7d476a2c343f3f3b3d3e3b393d222c7d5a777e6b2c342c3c662c222c79667d2c342c5575522c796f7c6b66617b7d6b51676a522c343f3c3c3f3e3d393b22522c7d6b7c78676d6b517a777e6b522c34522c3c66522c22522c51517a777e6b606f636b522c34522c596f7c6b66617b7d6b7d522c732275522c796f7c6b66617b7d6b51676a522c343e22522c7d6b7c78676d6b517a777e6b522c34522c3f3b63522c22522c51517a777e6b606f636b522c34522c596f7c6b66617b7d6b7d522c73532c73; __asc=47d4e892181ed3acf0ad6dc1e4c; __auc=47d4e892181ed3acf0ad6dc1e4c; _dc_gtm_UA-126956641-6=1; _gat_UA-9801603-1=1; _dc_gtm_UA-9801603-1=1; _abck=4443C64CF343383BA7F7218F99951AE2~0~YAAQlFB9ctrTPtuBAQAAwRJL7QgYP3LQFcT64IxFB0K5jBvGJb99+1WAZZlT0dVxdCre0Dkgc7AESXKt+QwvTEMn/YYfq+VhIbtj5IQlnwHJVzMiXnSyaWmBJoPQcDJaG1SL5A/qmkJxh1zTpHoCw1Ms4HZjr+5Vl0AKEihTmhy3U/DtPSR7qtOPyKEL1jlf1628DaQEQ+WOzPzTD3CX2w8zPl1wOGhCkpNAZQ0pekz/qEXG3MRGbtS9aw1h/KON7q4ZW2d3upZJJSHngaOi2quFbubN1G+7UOz2J4clNW9fsApb3zhfz1W2XRB1aD95C11bjJWd5iuxQE2ohfU/Jn59RW79pX3tL1amCmoQk46x1dkCWX4GAgYgRfzfjeG3+c64FBtmbAKHnHhKQ2Kuoz3iVLDcmLrdC2PX~-1~-1~-1; bm_sv=5E9100F4D3FF3C7FB5FD570E13891790~YAAQlFB9ctvTPtuBAQAAwRJL7RDkCFuW/6a33fngqbP93AR5LMc08YMrmgEfZUJA2QPemQMm/GET/TXiS236ExbVTRfRlzg5AcMsuilpOfpjs/f4jZmKQNhz32H/kNctQewrDp6A93kQRMMtutZyv1wKD8rf6aaK0wJWk4/h9Bn0VWMuaGjDF7dXJDnaW+ajkYrJbrf87CWZK9p46hOnqUIypsCx6GxitgpT2HGq1FTctETceOnnJa3TyJoBCAnSNUB/~1; _ga_70947XW48P=GS1.1.1657542452.1.1.1657543529.27; _ga=GA1.2.575143191.1657542453");
+		httpConn.setRequestProperty("origin", "https://www.tokopedia.com");
+		httpConn.setRequestProperty("pragma", "no-cache");
+		httpConn.setRequestProperty("referer", refererUrl+"?src=topads");
+		httpConn.setRequestProperty("sec-ch-ua", "\".Not/A)Brand\";v=\"99\", \"Google Chrome\";v=\"103\", \"Chromium\";v=\"103\"");
+		httpConn.setRequestProperty("sec-ch-ua-mobile", "?0");
+		httpConn.setRequestProperty("sec-ch-ua-platform", "\"Windows\"");
+		httpConn.setRequestProperty("sec-fetch-dest", "empty");
+		httpConn.setRequestProperty("sec-fetch-mode", "cors");
+		httpConn.setRequestProperty("sec-fetch-site", "same-site");
+		httpConn.setRequestProperty("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36");
+		httpConn.setRequestProperty("x-device", "desktop");
+		httpConn.setRequestProperty("x-source", "tokopedia-lite");
+		httpConn.setRequestProperty("x-tkpd-akamai", "pdpGetLayout");
+		httpConn.setRequestProperty("x-tkpd-lite-service", "zeus");
+		httpConn.setRequestProperty("x-version", "45367b8");
+		
+		OutputStreamWriter writer = new OutputStreamWriter(httpConn.getOutputStream());
+		writer.write("[{\"operationName\":\"PDPGetLayoutQuery\",\"variables\":{\"shopDomain\":\""+shopName+"\",\"productKey\":\""+productKey+"\",\"layoutID\":\"\",\"apiVersion\":1,\"userLocation\":{\"cityID\":\"176\",\"addressID\":\"0\",\"districtID\":\"2274\",\"postalCode\":\"\",\"latlon\":\"\"},\"extParam\":\"\"},\"query\":\"fragment ProductVariant on pdpDataProductVariant {  errorCode  parentID  defaultChild  sizeChart  variants {    productVariantID    variantID    name    identifier    option {      picture {        urlOriginal: url        urlThumbnail: url100        __typename      }      productVariantOptionID      variantUnitValueID      value      hex      __typename    }    __typename  }  children {    productID    price    priceFmt    optionID    productName    productURL    picture {      urlOriginal: url      urlThumbnail: url100      __typename    }    stock {      stock      isBuyable      stockWordingHTML      minimumOrder      maximumOrder      __typename    }    isCOD    isWishlist    campaignInfo {      campaignID      campaignType      campaignTypeName      campaignIdentifier      background      discountPercentage      originalPrice      discountPrice      stock      stockSoldPercentage      startDate      endDate      endDateUnix      appLinks      isAppsOnly      isActive      hideGimmick      isCheckImei      minOrder      __typename    }    thematicCampaign {      additionalInfo      background      campaignName      icon      __typename    }    __typename  }  __typename}fragment ProductMedia on pdpDataProductMedia {  media {    type    urlThumbnail: URLThumbnail    videoUrl: videoURLAndroid    prefix    suffix    description    __typename  }  videos {    source    url    __typename  }  __typename}fragment ProductHighlight on pdpDataProductContent {  name  price {    value    currency    __typename  }  campaign {    campaignID    campaignType    campaignTypeName    campaignIdentifier    background    percentageAmount    originalPrice    discountedPrice    originalStock    stock    stockSoldPercentage    threshold    startDate    endDate    endDateUnix    appLinks    isAppsOnly    isActive    hideGimmick    __typename  }  thematicCampaign {    additionalInfo    background    campaignName    icon    __typename  }  stock {    useStock    value    stockWording    __typename  }  variant {    isVariant    parentID    __typename  }  wholesale {    minQty    price {      value      currency      __typename    }    __typename  }  isCashback {    percentage    __typename  }  isTradeIn  isOS  isPowerMerchant  isWishlist  isCOD  isFreeOngkir {    isActive    __typename  }  preorder {    duration    timeUnit    isActive    preorderInDays    __typename  }  __typename}fragment ProductCustomInfo on pdpDataCustomInfo {  icon  title  isApplink  applink  separator  description  __typename}fragment ProductInfo on pdpDataProductInfo {  row  content {    title    subtitle    applink    __typename  }  __typename}fragment ProductDetail on pdpDataProductDetail {  content {    title    subtitle    applink    showAtFront    isAnnotation    __typename  }  __typename}fragment ProductDataInfo on pdpDataInfo {  icon  title  isApplink  applink  content {    icon    text    __typename  }  __typename}fragment ProductSocial on pdpDataSocialProof {  row  content {    icon    title    subtitle    applink    type    rating    __typename  }  __typename}query PDPGetLayoutQuery($shopDomain: String, $productKey: String, $layoutID: String, $apiVersion: Float, $userLocation: pdpUserLocation, $extParam: String) {  pdpGetLayout(shopDomain: $shopDomain, productKey: $productKey, layoutID: $layoutID, apiVersion: $apiVersion, userLocation: $userLocation, extParam: $extParam) {    name    pdpSession    basicInfo {      alias      isQA      id: productID      shopID      shopName      minOrder      maxOrder      weight      weightUnit      condition      status      url      needPrescription      catalogID      isLeasing      isBlacklisted      menu {        id        name        url        __typename      }      category {        id        name        title        breadcrumbURL        isAdult        isKyc        minAge        detail {          id          name          breadcrumbURL          isAdult          __typename        }        __typename      }      txStats {        transactionSuccess        transactionReject        countSold        paymentVerified        itemSoldFmt        __typename      }      stats {        countView        countReview        countTalk        rating        __typename      }      __typename    }    components {      name      type      position      data {        ...ProductMedia        ...ProductHighlight        ...ProductInfo        ...ProductDetail        ...ProductSocial        ...ProductDataInfo        ...ProductCustomInfo        ...ProductVariant        __typename      }      __typename    }    __typename  }}\"}]");
+		writer.flush();
+		writer.close();
+		httpConn.getOutputStream().close();
 
-		// Set up the URL with the search term and send the request
-		try {
-			HtmlPage page = client.getPage(urll);
-			HtmlElement desc1 = ((HtmlElement) page.getFirstByXPath(".//div[@data-testid='lblPDPDescriptionProduk']")) ;
-			Description = desc1.asNormalizedText();
-			System.out.println(Description);
-		} catch (FailingHttpStatusCodeException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (MalformedURLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+		InputStream responseStream = httpConn.getResponseCode() / 100 == 2
+				? httpConn.getInputStream()
+				: httpConn.getErrorStream();
+		String response2;
+		try (Scanner s = new Scanner(responseStream).useDelimiter("\\A")) {
+			response2 = s.hasNext() ? s.next() : "";
+			s.close();
+			httpConn.disconnect();
 		}
-		client.close();
-		return Description;
+		
+		///mapping json array to json string
+		ObjectMapper mapper = new ObjectMapper();
+		List<Map<String, Object>> map = mapper.readValue(response2.toString(), new TypeReference<List<Map<String,Object>>>(){});
+
+		///get description value from json string
+		JSONArray json = new JSONArray(map);
+		JSONObject pdpGetLayout = json.getJSONObject(0).getJSONObject("data").getJSONObject("pdpGetLayout");
+		JSONArray component = pdpGetLayout.getJSONArray("components");
+		JSONObject prodDetail = component.getJSONObject(4);
+		JSONArray data = prodDetail.getJSONArray("data");
+		JSONObject pdpDataProductDetail = data.getJSONObject(0);
+		JSONArray content = pdpDataProductDetail.getJSONArray("content");
+		JSONObject pdpContentProductDetail = content.getJSONObject(5);
+		description = (String) pdpContentProductDetail.get("subtitle");
+		
+		return description;
+		
+	}
+	
+	private static String extractProductUrl(String url) {
+		url = url.substring(0 , url.indexOf("?extParam"));
+		return url;
+	}
+	
+	private static String extractProductKey(String url, String shopName) {
+		String startWith = "https://www.tokopedia.com/"+shopName+"/";
+		url = url.substring(startWith.length());
+		return url;
+	}
+	
+	private static String extractStoreId(String url) {
+		String storeId = url.substring(url.indexOf(".com/")+5 , url.length());
+		return storeId;
 	}
 	
 	private static int totalOfPages(int total) {
